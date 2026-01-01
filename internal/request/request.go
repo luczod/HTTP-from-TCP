@@ -4,6 +4,7 @@ package request
 import (
 	"bytes"
 	"fmt"
+	"httpserver/internal/headers"
 	"io"
 )
 
@@ -17,6 +18,7 @@ type parserState string
 
 type Request struct {
 	RequestLine RequestLine
+	Headers     *headers.Headers
 	state       parserState
 }
 
@@ -28,14 +30,16 @@ var (
 )
 
 const (
-	StateInit  parserState = "init"
-	StateDone  parserState = "done"
-	StateError parserState = "error"
+	StateInit    parserState = "init"
+	StateDone    parserState = "done"
+	StateHeaders parserState = "header"
+	StateError   parserState = "error"
 )
 
 func newRequest() *Request {
 	return &Request{
-		state: StateInit,
+		state:   StateInit,
+		Headers: headers.NewHeaders(),
 	}
 }
 
@@ -48,13 +52,16 @@ func (r *Request) parse(data []byte) (int, error) {
 
 outer:
 	for {
+		currentData := data[read:]
+
 		switch r.state {
 		case StateError:
 			return 0, ErrorRequestInErrorState
 
 		case StateInit:
-			rl, n, err := parseRequestLine(data[read:])
+			rl, n, err := parseRequestLine(currentData)
 			if err != nil {
+				r.state = StateError
 				return 0, err
 			}
 
@@ -64,9 +71,31 @@ outer:
 
 			r.RequestLine = *rl
 			read += n
-			r.state = StateDone
+			r.state = StateHeaders
+
+		case StateHeaders:
+			n, done, err := r.Headers.Parse(currentData)
+
+			if err != nil {
+				return 0, err
+			}
+
+			if n == 0 {
+				break outer
+			}
+
+			read += n
+
+			if done {
+				r.state = StateDone
+			}
+
 		case StateDone:
 			break outer
+
+		default:
+			panic("somehow we have programmed poorly")
+
 		}
 	}
 	return read, nil
