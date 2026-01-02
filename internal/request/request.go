@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"httpserver/internal/headers"
 	"io"
+	"strconv"
 )
 
 type RequestLine struct {
@@ -20,6 +21,7 @@ type Request struct {
 	RequestLine RequestLine
 	Headers     *headers.Headers
 	state       parserState
+	Body        string
 }
 
 var (
@@ -33,6 +35,7 @@ const (
 	StateInit    parserState = "init"
 	StateDone    parserState = "done"
 	StateHeaders parserState = "header"
+	StateBody    parserState = "body"
 	StateError   parserState = "error"
 )
 
@@ -47,12 +50,30 @@ func (r *RequestLine) ValidHTTP() bool {
 	return r.HTTPVersion == "HTTP/1.1"
 }
 
+func getInt(headers headers.Headers, name string, defaultValue int) int {
+	valueStr, exists := headers.Get(name)
+	if !exists {
+		return defaultValue
+	}
+
+	value, err := strconv.Atoi(valueStr)
+
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
 func (r *Request) parse(data []byte) (int, error) {
 	read := 0
 
 outer:
 	for {
 		currentData := data[read:]
+
+		if len(currentData) == 0 {
+			break outer
+		}
 
 		switch r.state {
 		case StateError:
@@ -77,6 +98,7 @@ outer:
 			n, done, err := r.Headers.Parse(currentData)
 
 			if err != nil {
+				r.state = StateError
 				return 0, err
 			}
 
@@ -87,6 +109,23 @@ outer:
 			read += n
 
 			if done {
+				if r.hasBody() {
+					r.state = StateBody
+				} else {
+					r.state = StateDone
+				}
+			}
+		case StateBody:
+			length := getInt(*r.Headers, "content-length", 0)
+
+			if length == 0 {
+				panic("chunked not implemented")
+			}
+			remaining := min(length-len(r.Body), len(currentData))
+			r.Body += string(currentData[:remaining])
+			read += remaining
+
+			if len(r.Body) == length {
 				r.state = StateDone
 			}
 
@@ -107,6 +146,11 @@ func (r *Request) done() bool {
 
 func (r *Request) error() bool {
 	return r.state == StateError
+}
+
+func (r *Request) hasBody() bool {
+	length := getInt(*r.Headers, "content-length", 0)
+	return length > 0
 }
 
 func parseRequestLine(b []byte) (*RequestLine, int, error) {
